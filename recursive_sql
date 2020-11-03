@@ -1,0 +1,135 @@
+
+How to create fast database queries
+
+Hierarchical data in MySQL: parents and children in one query
+with 23 comments
+
+Answering questions asked on the site.
+
+Michael asks:
+
+I was wondering how to implement a hierarchical query in MySQL (using the ancestry chains version) for a single row, such that it picks up the parents (if any) and any children (if any).
+
+The idea is, I want to be able to jump in at any point, provide an Id of some sort, and be able to draw out the entire hierarchy for that Id, both upwards and downwards.
+
+We need to combine two queries here:
+
+Original hierarchical query that returns all descendants of a given id (a descendancy chain)
+A query that would return all ancestors of a given id (an ancestry chain)
+An id can have only one parent, that's why we can employ a linked list technique to build an ancestry chain, like shown in this article:
+
+Sorting lists
+Here's the query to to this (no functions required):? 
+
+SELECT  @r AS _id,
+         (
+         SELECT  @r := parent
+         FROM    t_hierarchy
+         WHERE   id = _id
+         ) AS parent,
+         @l := @l + 1 AS lvl
+ FROM    (
+         SELECT  @r := 1218,
+                 @l := 0,
+                 @cl := 0
+         ) vars,
+         t_hierarchy h
+WHERE    @r <> 0
+To combine two queries, we can employ a simple UNION ALL.
+
+The only problem that is left to preserve the correct level, since the ancestry chain query conts level backwards, and the hierarchical query will count it starting from zero.
+
+Let's create a sample table and see what we get:
+
+Table creation details
+Now, let's try to UNION ALL the queries as is:?
+
+SELECT  CONCAT(REPEAT('    ', lvl  - 1), _id) AS treeitem, parent, lvl AS level
+FROM    (
+        SELECT  @r AS _id,
+                (
+                SELECT  @r := parent
+                FROM    t_hierarchy
+                WHERE   id = _id
+                ) AS parent,
+                @l := @l + 1 AS lvl
+        FROM    (
+                SELECT  @r := 1218,
+                        @l := 0,
+                        @cl := 0
+                ) vars,
+                t_hierarchy h
+        WHERE   @r <> 0
+        ORDER BY
+                lvl DESC
+        ) qi
+UNION ALL
+SELECT  CONCAT(REPEAT('    ', level  - 1), CAST(hi.id AS CHAR)), parent, level
+FROM    (
+        SELECT  hierarchy_connect_by_parent_eq_prior_id(id) AS id, @level AS level
+        FROM    (
+                SELECT  @start_with := 1218,
+                        @id := @start_with,
+                        @level := 0
+                ) vars, t_hierarchy
+        WHERE   @id IS NOT NULL
+        ) ho
+JOIN    t_hierarchy hi
+ON      hi.id = ho.id
+
+We see that the hierarchical order is mangled: the first resultset is upside down, the second one is starting from level = 1.
+
+To fix it, we need to change the code that calculates level a little.
+
+First, we need to reverse the ancestry part.
+
+This can be easily done by sorting it on lvl DESC: ?
+
+SELECT  CONCAT(REPEAT('    ', level  - 1), _id) AS treeitem, parent, level
+FROM    (
+        SELECT  @r AS _id,
+                (
+                SELECT  @r := parent
+                FROM    t_hierarchy
+                WHERE   id = _id
+                ) AS parent,
+                @l := @l + 1 AS level
+        FROM    (
+                SELECT  @r := 1218,
+                        @l := 0,
+                        @cl := 0
+                ) vars,
+                t_hierarchy h
+        WHERE   @r <> 0
+        ORDER BY
+                level DESC
+        ) qi
+        
+        
+        We now have it in correct order but with wrong level values.
+
+Since a level is essentially a rownum here, we can just calculate it as a rownum instead:?
+
+SELECT  CONCAT(REPEAT('    ', level  - 1), id) AS treeitem, parent, level
+FROM    (
+        SELECT  _id AS id, parent,
+                @cl := @cl + 1 AS level
+        FROM    (
+                SELECT  @r AS _id,
+                        (
+                        SELECT  @r := parent
+                        FROM    t_hierarchy
+                        WHERE   id = _id
+                        ) AS parent,
+                        @l := @l + 1 AS level
+                FROM    (
+                        SELECT  @r := 1218,
+                                @l := 0,
+                                @cl := 0
+                        ) vars,
+                        t_hierarchy h
+                WHERE   @r <> 0
+                ORDER BY
+                        level DESC
+                ) qi
+        ) qo
